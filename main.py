@@ -3,15 +3,15 @@ import os
 import re
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, F, Router
-from aiogram.types import *
+from aiogram.types import Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove, FSInputFile
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.client.default import DefaultBotProperties
 from openpyxl import Workbook, load_workbook
-from openpyxl.styles import Font
 
+# BAZA ULANISHI
 try:
     from db_manager import db
 except ImportError:
@@ -20,7 +20,7 @@ except ImportError:
 
 # --- SOZLAMALAR ---
 TOKEN = "8143822107:AAFgSsJMeJ9SGdf1dQflBnExlvnsBIfRdzs"
-ADMIN_IDS = [7044905076]
+ADMIN_IDS = [7044905076,6134534264]
 ADMIN_PASSWORD = "1122"
 COADMIN_PASSWORD = "3344"
 
@@ -29,12 +29,12 @@ class Reg(StatesGroup): name = State()
 class AdminSt(StatesGroup): password = State(); add_nums = State(); set_limit = State()
 class CoAdminSt(StatesGroup): password = State()
 class Call(StatesGroup): 
-    waiting_for_action = State() 
-    phone = State(); status = State(); name = State()
+    waiting_for_action = State(); phone = State(); status = State(); name = State()
     age = State(); height = State(); weight = State(); interest = State()
 class ManualEntry(StatesGroup): phone = State(); action = State()
 class Search(StatesGroup): query = State()
 
+# BOT INIT
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher(storage=MemoryStorage())
 router = Router()
@@ -45,14 +45,13 @@ back_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🔙 Ortga")]], re
 
 def main_kb(uid, online=False):
     status_text = "Online ✅" if online else "Offline ❌"
-    kb = [
+    return ReplyKeyboardMarkup(keyboard=[
         [KeyboardButton(text="📞 Nomer olish"), KeyboardButton(text="✍️ Raqam kiritish")],
         [KeyboardButton(text="🔍 Raqam tekshirish")],
         [KeyboardButton(text="🟢 Ish vaqti: " + status_text)],
         [KeyboardButton(text="📉 Bugungi qabul qilinmagan")],
         [KeyboardButton(text="📈 Shaxsiy statistikam")]
-    ]
-    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
+    ], resize_keyboard=True)
 
 call_action_kb = ReplyKeyboardMarkup(keyboard=[
     [KeyboardButton(text="📞 Qo'ng'iroq qilingan (kotargan)")],
@@ -67,9 +66,8 @@ admin_kb = ReplyKeyboardMarkup(keyboard=[
     [KeyboardButton(text="➕ Raqam(lar) qo'shish"), KeyboardButton(text="⚙️ Limitni sozlash")],
     [KeyboardButton(text="📉 Kotarmaganlar (Excel)"), KeyboardButton(text="📞 Barcha raqamlar (Excel)")],
     [KeyboardButton(text="👤 Tasdiqlangan operatorlar"), KeyboardButton(text="🆕 Yangi so'rovlar")],
-    [KeyboardButton(text="📅 Kunlik Excel"), KeyboardButton(text="📅 Haftalik Excel")], 
-    [KeyboardButton(text="📅 Oylik Excel"), KeyboardButton(text="🧹 Tozalash")],
-    [KeyboardButton(text="🔙 Asosiy Menyu")]
+    [KeyboardButton(text="📅 Kunlik Excel"), KeyboardButton(text="📅 Haftalik Excel"), KeyboardButton(text="📅 Oylik Excel")],
+    [KeyboardButton(text="🧹 Tozalash"), KeyboardButton(text="🔙 Asosiy Menyu")]
 ], resize_keyboard=True)
 
 personal_kb = ReplyKeyboardMarkup(keyboard=[
@@ -78,7 +76,8 @@ personal_kb = ReplyKeyboardMarkup(keyboard=[
     [KeyboardButton(text="🔙 Ortga")]
 ], resize_keyboard=True)
 
-# ================== GLOBAL ORTGA ==================
+# ================== HANDLERS ==================
+
 @router.message(F.text == "🔙 Ortga")
 async def global_cancel(m: Message, state: FSMContext):
     await state.clear()
@@ -90,7 +89,7 @@ async def global_cancel(m: Message, state: FSMContext):
         await m.answer("Asosiy menyu:", reply_markup=main_kb(uid, is_online))
     else: 
         await m.answer("Bekor qilindi.", reply_markup=ReplyKeyboardRemove())
-# ================== START & REG ==================
+
 @router.message(CommandStart())
 async def cmd_start(m: Message, state: FSMContext):
     await state.clear()
@@ -122,7 +121,7 @@ async def reg_name(m: Message, state: FSMContext):
         await m.answer("Siz allaqachon ro'yxatdasiz.")
     await state.clear()
 
-# ================== OPERATOR: NOMER OLISH ==================
+# --- OPERATOR QISMI ---
 @router.message(F.text.startswith("🟢 Ish vaqti:"))
 async def toggle_online(m: Message):
     uid = m.from_user.id
@@ -139,33 +138,27 @@ async def get_number(m: Message, state: FSMContext):
     if not user or not user[5]: return await m.answer("Avval Online bo'ling.")
     if user[6]: 
         cur_num = user[6]
-        await m.answer("Sizda faol raqam bor: " + str(cur_num) + "\nNatijani tanlang:", reply_markup=call_action_kb)
+        await m.answer(f"Sizda faol raqam bor: {cur_num}\nNatijani tanlang:", reply_markup=call_action_kb)
         await state.set_state(Call.waiting_for_action)
         return
     
     limit = db.get_limit()
     count = db.get_today_count(uid)
     if count >= limit: 
-        await m.answer("⛔️ Kunlik limit tugadi (" + str(count) + "/" + str(limit) + ").")
+        await m.answer(f"⛔️ Kunlik limit tugadi ({count}/{limit}).")
         return
     
     data = db.get_free_number_full(uid) 
     if data:
         phone, name, tg, extra = data
         db.set_current_number(uid, phone)
-        
-        # Python 3.6 uchun xavfsiz o'zgaruvchilar
-        name_val = name if name else "Topilmadi"
-        tg_val = tg if tg else "Yo'q"
-        extra_val = extra if extra else "Yo'q"
-        
         msg = (
-            "📞 <b>Yangi mijoz:</b>\n\n"
-            "👤 <b>Ism:</b> " + str(name_val) + "\n"
-            "📱 <b>Tel:</b> <code>" + str(phone) + "</code>\n"
-            "✈️ <b>Tg:</b> " + str(tg_val) + "\n"
-            "📝 <b>Info:</b> " + str(extra_val) + "\n\n"
-            "<i>Qo'ng'iroq qilib, natijani tanlang:</i>"
+            f"📞 <b>Yangi mijoz:</b>\n\n"
+            f"👤 <b>Ism:</b> {name if name else 'Topilmadi'}\n"
+            f"📱 <b>Tel:</b> <code>{phone}</code>\n"
+            f"✈️ <b>Tg:</b> {tg if tg else 'Yoq'}\n"
+            f"📝 <b>Info:</b> {extra if extra else 'Yoq'}\n\n"
+            f"<i>Qo'ng'iroq qilib, natijani tanlang:</i>"
         )
         await m.answer(msg, reply_markup=call_action_kb)
         await state.set_state(Call.waiting_for_action)
@@ -185,11 +178,22 @@ async def manual_enter_save(m: Message, state: FSMContext):
     phone = m.text.strip()
     if len(phone) < 7: return await m.answer("Noto'g'ri raqam.", reply_markup=back_kb)
     await state.update_data(phone=phone)
-    await m.answer("Raqam: <b>" + str(phone) + "</b>\nNatijani tanlang:", reply_markup=call_action_kb)
+    await m.answer(f"Raqam: <b>{phone}</b>\nNatijani tanlang:", reply_markup=call_action_kb)
     await state.set_state(ManualEntry.action)
-# ================== NATIJA QABUL QILISH ==================
-@router.message(F.text.in_(["📞 Qo'ng'iroq qilingan (kotargan)", "🔄 Qayta bog'lanildi", "❌ Qo'ng'iroq qilinmadi", "🚫 Aktiv emas / noto'g'ri"]))
+
+# --- NATIJA QABUL QILISH ---
+@router.message(Call.waiting_for_action)
+@router.message(ManualEntry.action)
 async def log_call_result(m: Message, state: FSMContext):
+    st_map = {
+        "📞 Qo'ng'iroq qilingan (kotargan)": "success", 
+        "🔄 Qayta bog'lanildi": "recalled", 
+        "❌ Qo'ng'iroq qilinmadi": "no_answer", 
+        "🚫 Aktiv emas / noto'g'ri": "invalid"
+    }
+    
+    if m.text not in st_map: return await m.answer("Iltimos, tugmalardan birini tanlang.")
+
     uid = m.from_user.id
     user = db.get_user(uid)
     current_state = await state.get_state()
@@ -202,12 +206,6 @@ async def log_call_result(m: Message, state: FSMContext):
         if not user or not user[6]: return await m.answer("Faol raqam yo'q.")
         phone = user[6]
 
-    st_map = {
-        "📞 Qo'ng'iroq qilingan (kotargan)": "success", 
-        "🔄 Qayta bog'lanildi": "recalled", 
-        "❌ Qo'ng'iroq qilinmadi": "no_answer", 
-        "🚫 Aktiv emas / noto'g'ri": "invalid"
-    }
     status = st_map[m.text]
     await state.update_data(phone=phone, status=status)
 
@@ -216,11 +214,11 @@ async def log_call_result(m: Message, state: FSMContext):
         await state.set_state(Call.name)
     else:
         db.add_call({'op_id': uid, 'phone': phone, 'status': status})
-        if user and user[6] == phone: db.set_current_number(uid, None)
+        if str(current_state) != "ManualEntry:action": db.set_current_number(uid, None)
         await state.clear()
         await m.answer("✅ Natija saqlandi!", reply_markup=main_kb(uid, True))
 
-# Anketa qismlari
+# --- ANKETA ---
 @router.message(Call.name)
 async def c_name(m: Message, state: FSMContext): 
     await state.update_data(name=m.text)
@@ -252,25 +250,23 @@ async def c_weight(m: Message, state: FSMContext):
     await m.answer("Mijoz qiziqdimi?", reply_markup=kb)
     await state.set_state(Call.interest)
 
-@router.callback_query(F.data.startswith("int_"))
+@router.callback_query(Call.interest)
 async def c_interest(c: CallbackQuery, state: FSMContext):
     ans = "Ha" if c.data == "int_ha" else "Yo'q"
     d = await state.get_data()
     uid = c.from_user.id
-    
     db.add_call({
         'op_id': uid, 'phone': d['phone'], 'status': d['status'], 
         'name': d.get('name'), 'age': d.get('age'), 
         'height': d.get('height'), 'weight': d.get('weight'), 'interest': ans
     })
-    
     user = db.get_user(uid)
     if user and user[6] == d['phone']: db.set_current_number(uid, None)
     await state.clear()
-    await c.message.edit_text("Qiziqish: " + str(ans))
+    await c.message.edit_text(f"Qiziqish: {ans}")
     await c.message.answer("✅ Saqlandi!", reply_markup=main_kb(uid, True))
 
-# ================== ADMIN ==================
+# --- ADMIN QISMI ---
 @router.message(Command("admin"))
 async def admin_ent(m: Message, state: FSMContext):
     if m.from_user.id in ADMIN_IDS: 
@@ -290,6 +286,7 @@ async def adm_add(m: Message, state: FSMContext):
     if m.from_user.id not in ADMIN_IDS: return
     await m.answer("Excel fayl (.xlsx) yuboring:", reply_markup=back_kb)
     await state.set_state(AdminSt.add_nums)
+
 @router.message(AdminSt.add_nums, F.document)
 async def adm_upload_excel(m: Message, state: FSMContext, bot: Bot):
     if not m.document.file_name.endswith('.xlsx'):
@@ -297,53 +294,75 @@ async def adm_upload_excel(m: Message, state: FSMContext, bot: Bot):
     
     file_id = m.document.file_id
     file = await bot.get_file(file_id)
-    destination = "import_" + str(m.from_user.id) + ".xlsx"
+    destination = f"import_{m.from_user.id}.xlsx"
     await bot.download_file(file.file_path, destination)
     
     added, updated = 0, 0 
     try:
         wb = load_workbook(destination, data_only=True)
         ws = wb.active
-        header_row_index = 1
-        col_indices = {}
-        found_header = False
         
-        for r_idx, row in enumerate(ws.iter_rows(min_row=1, max_row=15, values_only=True), start=1):
-            row_str = [str(c).lower() if c else "" for c in row]
-            if any("ismingizni_yozing" in s for s in row_str):
-                header_row_index = r_idx
-                found_header = True
-                for c_idx, cell_val in enumerate(row_str):
-                    if "ismingizni_yozing" in cell_val: col_indices['name'] = c_idx
-                    elif "telefon_raqamingizni" in cell_val: col_indices['phone'] = c_idx
-                    elif "telegram" in cell_val: col_indices['tg'] = c_idx
-                    elif "mahsulot_uchun" in cell_val: col_indices['extra'] = c_idx
-                break
+        # AQLLI QIDIRUV (LANGAR)
+        anchor_text = "ismingizni_yozing"
         
-        if not found_header:
-            await m.answer("⚠️ 'ismingizni_yozing' deb boshlanuvchi qator topilmadi!")
+        start_col = 0
+        start_row = 0
+        found = False
+        
+        # 1. Butun jadvalni tekshirib, kalit so'zni topamiz
+        # Faqat dastlabki 30 qatorni tekshiramiz (tezlik uchun)
+        for r_idx, row in enumerate(ws.iter_rows(min_row=1, max_row=30, values_only=True), start=1):
+            for c_idx, cell_value in enumerate(row):
+                if cell_value and anchor_text in str(cell_value).lower():
+                    start_row = r_idx
+                    start_col = c_idx # Bu index 0 dan boshlanadi
+                    found = True
+                    break
+            if found: break
+            
+        if not found:
+            await m.answer(f"⚠️ '{anchor_text}' degan ustun topilmadi! Excelni tekshiring.")
             return
 
-        for row in ws.iter_rows(min_row=header_row_index + 1, values_only=True):
+        # 2. Topilgan joydan boshlab o'qish
+        # start_col = Ism turgan joy. Qolganlar unga nisbatan olinadi.
+        for row in ws.iter_rows(min_row=start_row + 1, values_only=True):
             if not row: continue
-            def get_val(key):
-                if key in col_indices and col_indices[key] < len(row):
-                    val = row[col_indices[key]]
-                    return str(val).strip() if val else ""
+            
+            # Xatolik bo'lmasligi uchun xavfsiz o'qish funksiyasi
+            def get_cell_relative(offset):
+                target_idx = start_col + offset
+                # Agar ustun mavjud bo'lsa va qiymat bo'lsa
+                if target_idx < len(row) and row[target_idx]:
+                    return str(row[target_idx]).strip()
                 return ""
-            name = get_val('name')
-            raw_phone = get_val('phone')
-            tg = get_val('tg')
-            extra = get_val('extra')
+
+            # NISBIY (RELATIVE) O'QISH:
+            name = get_cell_relative(0)        # Langar turgan joy (Ism)
+            raw_phone = get_cell_relative(1)   # +1 ustun (Tel)
+            tg = get_cell_relative(2)          # +2 ustun (Tg)
+            info = get_cell_relative(3)        # +3 ustun (Info)
+            extra_phone = get_cell_relative(4) # +4 ustun (Extra Tel)
+            
+            # Qo'shimcha ma'lumotlarni birlashtirish
+            full_extra_info = info
+            if extra_phone:
+                if full_extra_info:
+                    full_extra_info += f" | 2-tel: {extra_phone}"
+                else:
+                    full_extra_info = f"2-tel: {extra_phone}"
+
+            # Asosiy raqamni tozalash
             phone = re.sub(r'[^\d+]', '', raw_phone)
             if len(phone) < 7: continue
-            res = db.add_full_number(phone, name, tg, extra)
+
+            res = db.add_full_number(phone, name, tg, full_extra_info)
             if res == True: added += 1
             elif res == "updated": updated += 1
             
-        await m.answer("✅ Yuklandi!\n🆕 Qo'shildi: " + str(added) + "\n♻️ Yangilandi: " + str(updated), reply_markup=admin_kb)
+        await m.answer(f"✅ Yuklandi!\n🆕 Qo'shildi: {added}\n♻️ Yangilandi: {updated}", reply_markup=admin_kb)
     except Exception as e:
-        await m.answer("Xatolik: " + str(e))
+        await m.answer(f"Xatolik: {e}")
     finally:
         if os.path.exists(destination): os.remove(destination)
     await state.clear()
@@ -352,13 +371,7 @@ async def adm_upload_excel(m: Message, state: FSMContext, bot: Bot):
 async def adm_stats(m: Message):
     if m.from_user.id not in ADMIN_IDS: return
     t, s, n, i = db.get_general_stats()
-    msg = (
-        "<b>📊 Statistika</b>\n"
-        "📞 Jami: " + str(t) + "\n"
-        "✅ Kotargan: " + str(s) + "\n"
-        "❌ Yo'q: " + str(n) + "\n"
-        "🚫 Yaroqsiz: " + str(i)
-    )
+    msg = f"<b>📊 Statistika</b>\n📞 Jami: {t}\n✅ Kotargan: {s}\n❌ Yo'q: {n}\n🚫 Yaroqsiz: {i}"
     await m.answer(msg)
 
 @router.message(F.text == "👥 Operatorlar reytingi")
@@ -366,7 +379,7 @@ async def adm_rank(m: Message):
     if m.from_user.id not in ADMIN_IDS: return
     lines = []
     for r in db.get_operator_ranking():
-        lines.append("👤 " + str(r[0]) + ": <b>" + str(r[3]) + "</b>")
+        lines.append(f"👤 {r[0]}: <b>{r[3]}</b>")
     txt = "<b>🏆 Reyting:</b>\n" + "\n".join(lines)
     await m.answer(txt)
 
@@ -374,7 +387,7 @@ async def adm_rank(m: Message):
 async def set_limit_start(m: Message, state: FSMContext):
     if m.from_user.id not in ADMIN_IDS: return
     cur_limit = db.get_limit()
-    await m.answer("Hozirgi limit: " + str(cur_limit), reply_markup=back_kb)
+    await m.answer(f"Hozirgi limit: {cur_limit}", reply_markup=back_kb)
     await state.set_state(AdminSt.set_limit)
 
 @router.message(AdminSt.set_limit)
@@ -383,7 +396,8 @@ async def set_limit_save(m: Message, state: FSMContext):
         db.set_limit(int(m.text))
         await m.answer("Limit o'zgardi.", reply_markup=admin_kb)
         await state.clear()
-  @router.message(F.text.in_(["📉 Kotarmaganlar (Excel)", "📞 Barcha raqamlar (Excel)"]))
+
+@router.message(F.text.in_(["📉 Kotarmaganlar (Excel)", "📞 Barcha raqamlar (Excel)"]))
 async def adm_excels(m: Message):
     if m.from_user.id not in ADMIN_IDS: return
     if "Kotarmaganlar" in m.text:
@@ -400,10 +414,10 @@ async def adm_new(m: Message):
     if not pending: return await m.answer("Hozircha yangi so'rovlar yo'q.")
     for u in pending:
         kb = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="✅ Tasdiqlash", callback_data="app_" + str(u[1])), 
-            InlineKeyboardButton(text="❌ Rad etish", callback_data="rej_" + str(u[1])) 
+            InlineKeyboardButton(text="✅ Tasdiqlash", callback_data=f"app_{u[1]}"), 
+            InlineKeyboardButton(text="❌ Rad etish", callback_data=f"rej_{u[1]}") 
         ]])
-        await m.answer("👤 " + str(u[2]) + "\n📱 " + str(u[3]), reply_markup=kb)
+        await m.answer(f"👤 {u[2]}\n📱 {u[3]}", reply_markup=kb)
 
 @router.callback_query(F.data.startswith(("app_", "rej_", "del_")))
 async def adm_act(c: CallbackQuery):
@@ -431,8 +445,8 @@ async def adm_appr(m: Message):
     if not active_users: return await m.answer("Tasdiqlangan operatorlar yo'q.")
     for u in active_users:
         status_icon = "🟢" if u[5] else "🔴"
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🗑 O'chirish", callback_data="del_" + str(u[1])) ]])
-        await m.answer(status_icon + " " + str(u[2]) + " | " + str(u[3]), reply_markup=kb)
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🗑 O'chirish", callback_data=f"del_{u[1]}") ]])
+        await m.answer(f"{status_icon} {u[2]} | {u[3]}", reply_markup=kb)
 
 @router.message(F.text == "🧹 Tozalash")
 async def adm_clear_ask(m: Message):
@@ -470,7 +484,8 @@ async def coadmin_chk(m: Message, state: FSMContext):
 async def search_start(m: Message, state: FSMContext): 
     await m.answer("Qidirish uchun raqamning oxirgi 4 ta raqamini kiriting:", reply_markup=back_kb)
     await state.set_state(Search.query)
-  @router.message(Search.query)
+
+@router.message(Search.query)
 async def search_process(m: Message, state: FSMContext):
     res = db.search_phone_by_digits(m.text)
     sid = m.from_user.id
@@ -482,11 +497,11 @@ async def search_process(m: Message, state: FSMContext):
     else:
         for r in res[:5]:
             ph, op, dt, st, cn, age, h, w, intr, op_id = r
-            txt = "📱 " + str(ph) + "\n👤 Op: " + str(op) + "\n📊 Stat: " + str(st) + "\n🕒 Vaqt: " + str(dt)
+            txt = f"📱 {ph}\n👤 Op: {op}\n📊 Stat: {st}\n🕒 Vaqt: {dt}"
             
             if is_priv and op_id and int(op_id) != sid:
                 kb = InlineKeyboardMarkup(inline_keyboard=[[
-                    InlineKeyboardButton(text="✅ Eslatma yuborish", callback_data="ntf_y_" + str(op_id) + "_" + str(ph)),
+                    InlineKeyboardButton(text="✅ Eslatma yuborish", callback_data=f"ntf_y_{op_id}_{ph}"),
                     InlineKeyboardButton(text="❌ Yopish", callback_data="ntf_n")
                 ]])
                 await m.answer(txt, reply_markup=kb)
@@ -506,11 +521,11 @@ async def process_notification_callback(c: CallbackQuery):
             phone = parts[3]
             await bot.send_message(
                 chat_id=op_id, 
-                text="🔔 <b>DIQQAT, ESLATMA!</b>\n\nSiz ishlagan raqam: <b>" + str(phone) + "</b>\nAdmin tomonidan qayta tekshirildi.\nIltimos, qayta bog'laning!"
+                text=f"🔔 <b>DIQQAT, ESLATMA!</b>\n\nSiz ishlagan raqam: <b>{phone}</b>\nAdmin tomonidan qayta tekshirildi.\nIltimos, qayta bog'laning!"
             )
-            await c.message.edit_text(str(c.message.text) + "\n\n✅ <b>Eslatma yuborildi!</b>")
+            await c.message.edit_text(f"{c.message.text}\n\n✅ <b>Eslatma yuborildi!</b>")
         except Exception as e:
-            await c.message.answer("Xatolik: " + str(e))
+            await c.message.answer(f"Xatolik: {e}")
 
 # --- EXCEL REPORT ---
 async def generate_excel(m, period, op_id):
@@ -532,7 +547,7 @@ async def generate_excel(m, period, op_id):
     ws.append(["Op ID", "Op", "Tel", "Status", "Mijoz", "Yosh", "Bo'y", "Vazn", "Qiziqish", "Vaqt"])
     for r in rows: ws.append(list(r))
     
-    filename = "Rep_" + str(period) + ".xlsx"
+    filename = f"Rep_{period}.xlsx"
     wb.save(filename)
     await m.answer_document(FSInputFile(filename))
     if os.path.exists(filename): os.remove(filename)
@@ -550,7 +565,7 @@ async def today_no(m: Message):
         await m.answer("Bugun barcha raqamlarga javob berilgan.")
     else:
         lines = []
-        for r in nums: lines.append("❌ " + str(r[0]))
+        for r in nums: lines.append(f"❌ {r[0]}")
         await m.answer("📉 Bugungi ko'tarmaganlar:\n" + "\n".join(lines))
 
 @router.message(F.text == "📈 Shaxsiy statistikam")
@@ -565,9 +580,10 @@ async def my_ex(m: Message):
 @router.message(F.text == "🔙 Asosiy Menyu")
 async def back_main(m: Message, state: FSMContext): 
     await cmd_start(m, state)
+
 async def main():
-    print("Bot Python 3.6 muhitida ishga tushdi...")
+    print("Bot Aiogram 3 (Python 3.10) da ishga tushdi...")
     await dp.start_polling(bot)
 
-if name == "main":
+if __name__ == "__main__":
     asyncio.run(main())
