@@ -26,7 +26,7 @@ except ImportError:
 # --- SOZLAMALAR ---
 # Tokeningizni shu yerga qo'ying
 TOKEN = "8143822107:AAFgSsJMeJ9SGdf1dQflBnExlvnsBIfRdzs"
-ADMIN_IDS = [7044905076]  # Admin ID
+ADMIN_IDS = [7044905076, 6134534264]  # Admin ID
 ADMIN_PASSWORD = "1122"
 COADMIN_PASSWORD = "3344"
 
