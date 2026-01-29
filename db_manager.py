@@ -7,13 +7,15 @@ class Database:
         self.create_tables()
 
     def connect(self):
+        """Bazaga ulanish uchun yordamchi funksiya"""
         return sqlite3.connect(self.db_name)
 
     def create_tables(self):
+        """Jadvallarni yaratish (agar mavjud bo'lmasa)"""
         with self.connect() as conn:
             cursor = conn.cursor()
             
-            # 1. USERS (Operatorlar)
+            # 1. USERS (Operatorlar jadvali)
             cursor.execute("""CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 telegram_id BIGINT UNIQUE, 
@@ -27,6 +29,8 @@ class Database:
             )""")
             
             # 2. NUMBERS (Mijozlar bazasi)
+            # is_used: 0-bo'sh, 1-band
+            # status: new, process, success, recalled, no_answer, invalid
             cursor.execute("""CREATE TABLE IF NOT EXISTS numbers (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 phone_number TEXT UNIQUE,
@@ -39,7 +43,7 @@ class Database:
                 status TEXT DEFAULT 'new'
             )""")
             
-            # 3. CALLS (Qo'ng'iroqlar tarixi)
+            # 3. CALLS (Qo'ng'iroqlar tarixi - Statistika uchun)
             cursor.execute("""CREATE TABLE IF NOT EXISTS calls (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 operator_id BIGINT, 
@@ -53,150 +57,42 @@ class Database:
                 created_at DATETIME
             )""")
             
-            # 4. SETTINGS (Sozlamalar)
+            # 4. SETTINGS (Sozlamalar, masalan kunlik limit)
             cursor.execute("""CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)""")
+            
+            # Boshlang'ich limitni o'rnatish (agar yo'q bo'lsa)
             cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('daily_limit', '50')")
+            
             conn.commit()
 
-    # --- SOZLAMALAR ---
+    # ================== SOZLAMALAR (LIMIT) ==================
     def get_limit(self):
+        """Kunlik limitni olish"""
         with self.connect() as conn:
             res = conn.execute("SELECT value FROM settings WHERE key='daily_limit'").fetchone()
             return int(res[0]) if res else 50
 
     def set_limit(self, limit):
+        """Kunlik limitni o'zgartirish"""
         with self.connect() as conn: 
             conn.execute("UPDATE settings SET value = ? WHERE key='daily_limit'", (str(limit),))
 
+    # ================== STATISTICS (KUNLIK VA STATISTIKA) ==================
     def get_today_count(self, op_id):
+        """Operatorning bugungi qo'ng'iroqlari soni"""
         today = datetime.now().strftime("%Y-%m-%d")
         with self.connect() as conn:
             res = conn.execute("SELECT COUNT(*) FROM calls WHERE operator_id = ? AND created_at LIKE ?", (op_id, f"{today}%")).fetchone()
             return res[0] if res else 0
 
     def get_today_no_answers(self, op_id):
+        """Operatorning bugungi 'ko'tarmadi' (no_answer) raqamlari ro'yxati"""
         today = datetime.now().strftime("%Y-%m-%d")
         with self.connect() as conn:
             return conn.execute("SELECT phone_number FROM calls WHERE operator_id = ? AND status = 'no_answer' AND created_at LIKE ?", (op_id, f"{today}%")).fetchall()
 
-    # --- RAQAMLAR LOGIKASI ---
-    def add_full_number(self, phone, name, tg, extra):
-        """Exceldan olingan ma'lumotlarni saqlash"""
-        with self.connect() as conn:
-            try:
-                conn.execute("""
-                    INSERT INTO numbers (phone_number, full_name, telegram_user, extra_info, is_used, status) 
-                    VALUES (?, ?, ?, ?, 0, 'new')
-                """, (phone, name, tg, extra))
-                return True
-            except sqlite3.IntegrityError:
-                # Agar raqam bor bo'lsa, ma'lumotlarini yangilaymiz va statusini reset qilamiz
-                conn.execute("""
-                    UPDATE numbers 
-                    SET full_name=?, telegram_user=?, extra_info=?, is_used=0, assigned_to=NULL, status='new'
-                    WHERE phone_number=?
-                """, (name, tg, extra, phone))
-                return "updated"
-
-    def get_free_number_full(self, telegram_id):
-        """Operatorga bo'sh raqam berish"""
-        with self.connect() as conn:
-            cursor = conn.cursor()
-            # 1. Avval "qayta qo'ng'iroq" (recalled) qilinishi kerak bo'lgan raqamlarni tekshiramiz (shu operatorniki)
-            cursor.execute("""
-                SELECT phone_number, full_name, telegram_user, extra_info 
-                FROM numbers 
-                WHERE assigned_to = ? AND status = 'recalled'
-                LIMIT 1
-            """, (telegram_id,))
-            res = cursor.fetchone()
-            
-            if res:
-                return res
-            
-            # 2. Agar yo'q bo'lsa, mutlaqo yangi raqam beramiz
-            cursor.execute("""
-                SELECT phone_number, full_name, telegram_user, extra_info 
-                FROM numbers 
-                WHERE is_used = 0 
-                LIMIT 1
-            """)
-            res = cursor.fetchone()
-            
-            if res:
-                phone = res[0]
-                cursor.execute("UPDATE numbers SET is_used = 1, assigned_to = ?, taken_at = ?, status = 'process' WHERE phone_number = ?", (telegram_id, datetime.now(), phone))
-                conn.commit()
-                return res # (phone, name, tg, extra)
-            return None
-
-    def get_all_numbers(self):
-        with self.connect() as conn: 
-            return conn.execute("SELECT n.phone_number, n.is_used, u.name, n.taken_at FROM numbers n LEFT JOIN users u ON n.assigned_to = u.telegram_id").fetchall()
-    
-    def get_no_answer_numbers(self):
-        with self.connect() as conn: 
-            return conn.execute("SELECT phone_number FROM calls WHERE status = 'no_answer'").fetchall()
-    
-    def clear_numbers_and_calls(self):
-        with self.connect() as conn:
-            conn.execute("DELETE FROM numbers")
-            conn.execute("DELETE FROM calls")
-            conn.execute("UPDATE users SET current_number = NULL")
-
-    # --- USERS (FOYDALANUVCHILAR) ---
-    def add_user(self, telegram_id, name, phone):
-        with self.connect() as conn:
-            try: 
-                conn.execute("INSERT INTO users (telegram_id, name, phone, registered_at) VALUES (?, ?, ?, ?)", (telegram_id, name, phone, datetime.now()))
-                return True
-            except: 
-                return False
-
-    def get_user(self, telegram_id):
-        # Indekslar: 0-id, 1-tg_id, 2-name, 3-phone, 4-approved, 5-online, 6-current_num, 7-coadmin
-        with self.connect() as conn: 
-            return conn.execute("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,)).fetchone()
-    
-    def get_all_users(self):
-        with self.connect() as conn: 
-            return conn.execute("SELECT * FROM users").fetchall()
-    
-    def approve_user(self, telegram_id, approved=True):
-        with self.connect() as conn: 
-            conn.execute("UPDATE users SET is_approved = ? WHERE telegram_id = ?", (approved, telegram_id))
-    
-    def make_coadmin(self, telegram_id, status=True):
-        with self.connect() as conn: 
-            try: conn.execute("UPDATE users SET is_coadmin = ? WHERE telegram_id = ?", (status, telegram_id))
-            except: pass
-    
-    def delete_user(self, telegram_id):
-        with self.connect() as conn: 
-            conn.execute("DELETE FROM users WHERE telegram_id = ?", (telegram_id,))
-    
-    def set_online(self, telegram_id, status: bool):
-        with self.connect() as conn: 
-            conn.execute("UPDATE users SET is_online = ? WHERE telegram_id = ?", (status, telegram_id))
-    
-    def set_current_number(self, telegram_id, number):
-        with self.connect() as conn: 
-            conn.execute("UPDATE users SET current_number = ? WHERE telegram_id = ?", (number, telegram_id))
-
-    # --- CALLS (QO'NG'IROQLAR) ---
-    def add_call(self, data):
-        with self.connect() as conn:
-            # Call jadvaliga qo'shish
-            conn.execute("""
-                INSERT INTO calls (operator_id, phone_number, status, client_name, client_age, client_height, client_weight, interest, created_at) 
-                VALUES (?,?,?,?,?,?,?,?,?)
-            """, (data.get('op_id'), data.get('phone'), data.get('status'), data.get('name'), data.get('age'), data.get('height'), data.get('weight'), data.get('interest'), datetime.now()))
-            
-            # Numbers jadvalida statusni yangilash
-            new_status = data.get('status')
-            conn.execute("UPDATE numbers SET status = ? WHERE phone_number = ?", (new_status, data.get('phone')))
-
     def get_calls_stats(self, start, end, operator_id=None):
+        """Excel hisobot uchun statistika (Vaqt oralig'i bo'yicha)"""
         with self.connect() as conn:
             query = """
                 SELECT c.operator_id, u.name, c.phone_number, c.status, 
@@ -210,17 +106,20 @@ class Database:
             if operator_id: 
                 query += " AND c.operator_id = ?"
                 params.append(operator_id)
+            
             return conn.execute(query, params).fetchall()
 
     def get_general_stats(self):
+        """Admin uchun umumiy statistika"""
         with self.connect() as conn:
-            t = conn.execute("SELECT COUNT(*) FROM calls").fetchone()[0]
+            t = conn.execute("SELECT COUNT(*) FROM numbers").fetchone()[0] # Jami baza
             s = conn.execute("SELECT COUNT(*) FROM calls WHERE status = 'success'").fetchone()[0]
             n = conn.execute("SELECT COUNT(*) FROM calls WHERE status = 'no_answer'").fetchone()[0]
             i = conn.execute("SELECT COUNT(*) FROM calls WHERE status = 'invalid'").fetchone()[0]
             return t, s, n, i
 
     def get_operator_ranking(self):
+        """Operatorlar reytingi (Kim ko'p sotgan)"""
         with self.connect() as conn: 
             return conn.execute("""
                 SELECT u.name, u.telegram_id, COUNT(c.id), SUM(CASE WHEN c.status='success' THEN 1 ELSE 0 END) 
@@ -230,9 +129,75 @@ class Database:
                 ORDER BY 4 DESC
             """).fetchall()
 
-    def search_phone_by_digits(self, digits):
+    # ================== RAQAMLAR LOGIKASI (ENG MUHIM QISM) ==================
+    def add_full_number(self, phone, name, tg, extra):
+        """Exceldan olingan raqamlarni bazaga yozish"""
         with self.connect() as conn:
-            # LIKE %digits% qildik, shunda raqamning o'rtasidan ham qidiradi
+            try:
+                # Yangi raqam qo'shish
+                conn.execute("""
+                    INSERT INTO numbers (phone_number, full_name, telegram_user, extra_info, is_used, status) 
+                    VALUES (?, ?, ?, ?, 0, 'new')
+                """, (phone, name, tg, extra))
+                return True
+            except sqlite3.IntegrityError:
+                # Agar raqam oldin bor bo'lsa, ma'lumotlarini yangilaymiz va qayta ishlashga tayyorlaymiz
+                conn.execute("""
+                    UPDATE numbers 
+                    SET full_name=?, telegram_user=?, extra_info=?, is_used=0, assigned_to=NULL, status='new'
+                    WHERE phone_number=?
+                """, (name, tg, extra, phone))
+                return "updated"
+
+    def get_free_number_full(self, telegram_id):
+        """Operatorga ishlash uchun raqam berish"""
+        with self.connect() as conn:
+            cursor = conn.cursor()
+            
+            # 1-PRIORITET: Shu operatorga biriktirilgan va "qayta qo'ng'iroq" (recalled) qilinishi kerak bo'lganlar
+            res = cursor.execute("""
+                SELECT phone_number, full_name, telegram_user, extra_info 
+                FROM numbers 
+                WHERE assigned_to = ? AND status = 'recalled'
+                LIMIT 1
+            """, (telegram_id,)).fetchone()
+            
+            if res: return res # Agar bo'lsa, o'shani qaytaramiz
+            
+            # 2-PRIORITET: Yangi yoki bo'sh raqamlar (is_used=0)
+            res = cursor.execute("""
+                SELECT phone_number, full_name, telegram_user, extra_info 
+                FROM numbers 
+                WHERE is_used = 0 
+                LIMIT 1
+            """).fetchone()
+            
+            if res:
+                phone = res[0]
+                # Raqamni band qilamiz (boshqalar olmasligi uchun)
+                cursor.execute("""
+                    UPDATE numbers 
+                    SET is_used = 1, assigned_to = ?, taken_at = ?, status = 'process' 
+                    WHERE phone_number = ?
+                """, (telegram_id, datetime.now(), phone))
+                conn.commit()
+                return res
+            
+            return None # Raqam qolmadi
+
+    def get_all_numbers(self):
+        """Barcha raqamlar ro'yxati (Excel uchun)"""
+        with self.connect() as conn: 
+            return conn.execute("SELECT n.phone_number, n.is_used, u.name, n.taken_at FROM numbers n LEFT JOIN users u ON n.assigned_to = u.telegram_id").fetchall()
+    
+    def get_no_answer_numbers(self):
+        """Umumiy javob berilmaganlar (Admin uchun)"""
+        with self.connect() as conn: 
+            return conn.execute("SELECT phone_number FROM calls WHERE status = 'no_answer'").fetchall()
+    
+    def search_phone_by_digits(self, digits):
+        """Raqam qidirish (LIKE %...%)"""
+        with self.connect() as conn:
             return conn.execute("""
                 SELECT c.phone_number, u.name, c.created_at, c.status, 
                        c.client_name, c.client_age, c.client_height, c.client_weight, 
@@ -242,5 +207,65 @@ class Database:
                 WHERE c.phone_number LIKE ? 
                 ORDER BY c.created_at DESC
             """, (f"%{digits}%",)).fetchall()
+
+    def clear_numbers_and_calls(self):
+        """Bazani tozalash"""
+        with self.connect() as conn:
+            conn.execute("DELETE FROM numbers")
+            conn.execute("DELETE FROM calls")
+            conn.execute("UPDATE users SET current_number = NULL")
+
+    # ================== USERS (FOYDALANUVCHILAR) ==================
+    def add_user(self, telegram_id, name, phone):
+        with self.connect() as conn:
+            try: 
+                conn.execute("INSERT INTO users (telegram_id, name, phone, registered_at) VALUES (?, ?, ?, ?)", (telegram_id, name, phone, datetime.now()))
+                return True
+            except: 
+                return False
+
+    def get_user(self, telegram_id):
+        with self.connect() as conn: 
+            return conn.execute("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,)).fetchone()
+    
+    def get_all_users(self):
+        with self.connect() as conn: 
+            return conn.execute("SELECT * FROM users").fetchall()
+    
+    def approve_user(self, telegram_id, approved=True):
+        with self.connect() as conn: 
+            conn.execute("UPDATE users SET is_approved = ? WHERE telegram_id = ?", (approved, telegram_id))
+    
+    def delete_user(self, telegram_id):
+        with self.connect() as conn: 
+            conn.execute("DELETE FROM users WHERE telegram_id = ?", (telegram_id,))
+    
+    def set_online(self, telegram_id, status: bool):
+        with self.connect() as conn: 
+            conn.execute("UPDATE users SET is_online = ? WHERE telegram_id = ?", (status, telegram_id))
+    
+    def set_current_number(self, telegram_id, number):
+        with self.connect() as conn: 
+            conn.execute("UPDATE users SET current_number = ? WHERE telegram_id = ?", (number, telegram_id))
+
+    def make_coadmin(self, telegram_id, status=True):
+        with self.connect() as conn: 
+            try: conn.execute("UPDATE users SET is_coadmin = ? WHERE telegram_id = ?", (status, telegram_id))
+            except: pass
+
+    # ================== CALL LOGGING (QO'NG'IROQNI SAQLASH) ==================
+    def add_call(self, data):
+        """
+        Qo'ng'iroq natijasini saqlash:
+        1. Calls jadvaliga yozadi (Tarix)
+        2. Numbers jadvalini yangilaydi (Statusni o'zgartiradi)
+        """
+        with self.connect() as conn:
+            conn.execute("""
+                INSERT INTO calls (operator_id, phone_number, status, client_name, client_age, client_height, client_weight, interest, created_at) 
+                VALUES (?,?,?,?,?,?,?,?,?)
+            """, (data.get('op_id'), data.get('phone'), data.get('status'), data.get('name'), data.get('age'), data.get('height'), data.get('weight'), data.get('interest'), datetime.now()))
+            
+            conn.execute("UPDATE numbers SET status = ? WHERE phone_number = ?", (data.get('status'), data.get('phone')))
 
 db = Database("call_center.db")
