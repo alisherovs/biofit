@@ -11,7 +11,6 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.client.default import DefaultBotProperties
 from openpyxl import Workbook, load_workbook
 
-# BAZA ULANISHI
 try:
     from db_manager import db
 except ImportError:
@@ -20,7 +19,7 @@ except ImportError:
 
 # --- SOZLAMALAR ---
 TOKEN = "8143822107:AAFgSsJMeJ9SGdf1dQflBnExlvnsBIfRdzs"
-ADMIN_IDS = [7044905076,6134534264]
+ADMIN_IDS = [7044905076, 6134534264]
 ADMIN_PASSWORD = "1122"
 COADMIN_PASSWORD = "3344"
 
@@ -34,7 +33,6 @@ class Call(StatesGroup):
 class ManualEntry(StatesGroup): phone = State(); action = State()
 class Search(StatesGroup): query = State()
 
-# BOT INIT
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher(storage=MemoryStorage())
 router = Router()
@@ -76,14 +74,26 @@ personal_kb = ReplyKeyboardMarkup(keyboard=[
     [KeyboardButton(text="🔙 Ortga")]
 ], resize_keyboard=True)
 
-# ================== HANDLERS ==================
+# ================== HANDLERS: START & ORTGA ==================
 
+# "Ortga" tugmasi uchun universal yechim
 @router.message(F.text == "🔙 Ortga")
 async def global_cancel(m: Message, state: FSMContext):
+    # Hozirgi holatni tekshiramiz
+    current_state = await state.get_state()
     await state.clear()
+    
     uid = m.from_user.id
+    
+    # Agar Admin holatida bo'lgan bo'lsa -> Admin panelga qaytarish
+    if current_state and current_state.startswith("AdminSt"):
+        await m.answer("Admin Panel:", reply_markup=admin_kb)
+        return
+
+    # Aks holda -> User menyusiga qaytarish
     user = db.get_user(uid)
-    if user and user[6]: db.set_current_number(uid, None)
+    if user and user[6]: db.set_current_number(uid, None) # Faol raqamni bekor qilish
+    
     if user and user[4]: 
         is_online = bool(user[5])
         await m.answer("Asosiy menyu:", reply_markup=main_kb(uid, is_online))
@@ -121,7 +131,8 @@ async def reg_name(m: Message, state: FSMContext):
         await m.answer("Siz allaqachon ro'yxatdasiz.")
     await state.clear()
 
-# --- OPERATOR QISMI ---
+# ================== USER FUNCTIONALITY ==================
+
 @router.message(F.text.startswith("🟢 Ish vaqti:"))
 async def toggle_online(m: Message):
     uid = m.from_user.id
@@ -181,7 +192,7 @@ async def manual_enter_save(m: Message, state: FSMContext):
     await m.answer(f"Raqam: <b>{phone}</b>\nNatijani tanlang:", reply_markup=call_action_kb)
     await state.set_state(ManualEntry.action)
 
-# --- NATIJA QABUL QILISH ---
+# --- CALL RESULT ---
 @router.message(Call.waiting_for_action)
 @router.message(ManualEntry.action)
 async def log_call_result(m: Message, state: FSMContext):
@@ -218,7 +229,7 @@ async def log_call_result(m: Message, state: FSMContext):
         await state.clear()
         await m.answer("✅ Natija saqlandi!", reply_markup=main_kb(uid, True))
 
-# --- ANKETA ---
+# --- FORM ---
 @router.message(Call.name)
 async def c_name(m: Message, state: FSMContext): 
     await state.update_data(name=m.text)
@@ -266,7 +277,32 @@ async def c_interest(c: CallbackQuery, state: FSMContext):
     await c.message.edit_text(f"Qiziqish: {ans}")
     await c.message.answer("✅ Saqlandi!", reply_markup=main_kb(uid, True))
 
-# --- ADMIN QISMI ---
+# --- USER: SHAXSIY STATISTIKA & NO ANSWER ---
+
+@router.message(F.text == "📉 Bugungi qabul qilinmagan")
+async def today_no_answers(m: Message):
+    nums = db.get_today_no_answers(m.from_user.id)
+    if not nums:
+        await m.answer("Bugun barcha raqamlarga javob berilgan.")
+    else:
+        # nums -> [(phone,), (phone,)]
+        text = "<b>📉 Bugun javob berilmagan raqamlar:</b>\n\n"
+        for idx, row in enumerate(nums, 1):
+            text += f"{idx}. {row[0]}\n"
+        await m.answer(text)
+
+@router.message(F.text == "📈 Shaxsiy statistikam")
+async def my_statistics_menu(m: Message):
+    # Menyuni ochadi
+    await m.answer("Hisobot davrini tanlang:", reply_markup=personal_kb)
+
+@router.message(F.text.in_(["📅 Kunlik hisobot (Excel)", "📅 Haftalik hisobot (Excel)"]))
+async def my_statistics_excel(m: Message):
+    period = "kunlik" if "Kunlik" in m.text else "haftalik"
+    await generate_excel(m, period, m.from_user.id)
+
+# ================== ADMIN ==================
+
 @router.message(Command("admin"))
 async def admin_ent(m: Message, state: FSMContext):
     if m.from_user.id in ADMIN_IDS: 
@@ -280,6 +316,14 @@ async def admin_chk(m: Message, state: FSMContext):
         await state.clear()
     else: 
         await m.answer("Xato.")
+
+@router.message(F.text == "🔙 Asosiy Menyu")
+async def admin_back_to_main(m: Message, state: FSMContext):
+    await state.clear()
+    uid = m.from_user.id
+    user = db.get_user(uid)
+    is_online = bool(user[5]) if user else False
+    await m.answer("Asosiy menyuga qaytildi.", reply_markup=main_kb(uid, is_online))
 
 @router.message(F.text == "➕ Raqam(lar) qo'shish")
 async def adm_add(m: Message, state: FSMContext):
@@ -302,20 +346,17 @@ async def adm_upload_excel(m: Message, state: FSMContext, bot: Bot):
         wb = load_workbook(destination, data_only=True)
         ws = wb.active
         
-        # AQLLI QIDIRUV (LANGAR)
+        # AQLLI QIDIRUV
         anchor_text = "ismingizni_yozing"
-        
         start_col = 0
         start_row = 0
         found = False
         
-        # 1. Butun jadvalni tekshirib, kalit so'zni topamiz
-        # Faqat dastlabki 30 qatorni tekshiramiz (tezlik uchun)
-        for r_idx, row in enumerate(ws.iter_rows(min_row=1, max_row=30, values_only=True), start=1):
+        for r_idx, row in enumerate(ws.iter_rows(min_row=1, max_row=50, values_only=True), start=1):
             for c_idx, cell_value in enumerate(row):
                 if cell_value and anchor_text in str(cell_value).lower():
                     start_row = r_idx
-                    start_col = c_idx # Bu index 0 dan boshlanadi
+                    start_col = c_idx 
                     found = True
                     break
             if found: break
@@ -324,35 +365,25 @@ async def adm_upload_excel(m: Message, state: FSMContext, bot: Bot):
             await m.answer(f"⚠️ '{anchor_text}' degan ustun topilmadi! Excelni tekshiring.")
             return
 
-        # 2. Topilgan joydan boshlab o'qish
-        # start_col = Ism turgan joy. Qolganlar unga nisbatan olinadi.
         for row in ws.iter_rows(min_row=start_row + 1, values_only=True):
             if not row: continue
             
-            # Xatolik bo'lmasligi uchun xavfsiz o'qish funksiyasi
             def get_cell_relative(offset):
                 target_idx = start_col + offset
-                # Agar ustun mavjud bo'lsa va qiymat bo'lsa
                 if target_idx < len(row) and row[target_idx]:
                     return str(row[target_idx]).strip()
                 return ""
 
-            # NISBIY (RELATIVE) O'QISH:
-            name = get_cell_relative(0)        # Langar turgan joy (Ism)
-            raw_phone = get_cell_relative(1)   # +1 ustun (Tel)
-            tg = get_cell_relative(2)          # +2 ustun (Tg)
-            info = get_cell_relative(3)        # +3 ustun (Info)
-            extra_phone = get_cell_relative(4) # +4 ustun (Extra Tel)
+            name = get_cell_relative(0)
+            raw_phone = get_cell_relative(1)
+            tg = get_cell_relative(2)
+            info = get_cell_relative(3)
+            extra_phone = get_cell_relative(4)
             
-            # Qo'shimcha ma'lumotlarni birlashtirish
             full_extra_info = info
             if extra_phone:
-                if full_extra_info:
-                    full_extra_info += f" | 2-tel: {extra_phone}"
-                else:
-                    full_extra_info = f"2-tel: {extra_phone}"
+                full_extra_info = f"{info} | 2-tel: {extra_phone}" if info else f"2-tel: {extra_phone}"
 
-            # Asosiy raqamni tozalash
             phone = re.sub(r'[^\d+]', '', raw_phone)
             if len(phone) < 7: continue
 
@@ -366,6 +397,53 @@ async def adm_upload_excel(m: Message, state: FSMContext, bot: Bot):
     finally:
         if os.path.exists(destination): os.remove(destination)
     await state.clear()
+
+# --- ADMIN REPORTS ---
+async def generate_excel(m, period, op_id):
+    now = datetime.now()
+    if period == "kunlik": 
+        s = now.replace(hour=0, minute=0, second=0)
+        e = now + timedelta(days=1)
+    elif period == "haftalik": 
+        s = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0)
+        e = s + timedelta(days=7)
+    elif period == "oylik": 
+        s = now.replace(day=1, hour=0, minute=0, second=0)
+        e = (s.replace(month=s.month+1) if s.month < 12 else s.replace(year=s.year+1, month=1))
+    
+    rows = db.get_calls_stats(s, e, op_id)
+    if not rows: return await m.answer("Ushbu davr uchun ma'lumot topilmadi.")
+    
+    wb = Workbook(); ws = wb.active
+    ws.append(["Op ID", "Op", "Tel", "Status", "Mijoz", "Yosh", "Bo'y", "Vazn", "Qiziqish", "Vaqt"])
+    for r in rows: ws.append(list(r))
+    
+    filename = f"Rep_{period}_{m.from_user.id}.xlsx"
+    wb.save(filename)
+    await m.answer_document(FSInputFile(filename))
+    if os.path.exists(filename): os.remove(filename)
+
+@router.message(F.text.in_(["📅 Kunlik Excel", "📅 Haftalik Excel", "📅 Oylik Excel"]))
+async def adm_exc(m: Message): 
+    if m.from_user.id in ADMIN_IDS: 
+        p = "kunlik" if "Kunlik" in m.text else "haftalik" if "Haftalik" in m.text else "oylik"
+        await generate_excel(m, p, None)
+
+@router.message(F.text == "📉 Kotarmaganlar (Excel)")
+async def adm_noans(m: Message):
+    if m.from_user.id not in ADMIN_IDS: return
+    rows = db.get_no_answer_numbers()
+    wb=Workbook(); ws=wb.active; ws.append(["Tel"])
+    for r in rows: ws.append(list(r))
+    fn="NoAns.xlsx"; wb.save(fn); await m.answer_document(FSInputFile(fn)); os.remove(fn)
+
+@router.message(F.text == "📞 Barcha raqamlar (Excel)")
+async def adm_allnums(m: Message):
+    if m.from_user.id not in ADMIN_IDS: return
+    data = db.get_all_numbers()
+    wb = Workbook(); ws = wb.active; ws.append(["Tel", "Ishlatilgan", "Operator", "Vaqt"])
+    for r in data: ws.append(list(r))
+    fn = "AllNums.xlsx"; wb.save(fn); await m.answer_document(FSInputFile(fn)); os.remove(fn)
 
 @router.message(F.text == "📊 Umumiy statistika")
 async def adm_stats(m: Message):
@@ -396,17 +474,6 @@ async def set_limit_save(m: Message, state: FSMContext):
         db.set_limit(int(m.text))
         await m.answer("Limit o'zgardi.", reply_markup=admin_kb)
         await state.clear()
-
-@router.message(F.text.in_(["📉 Kotarmaganlar (Excel)", "📞 Barcha raqamlar (Excel)"]))
-async def adm_excels(m: Message):
-    if m.from_user.id not in ADMIN_IDS: return
-    if "Kotarmaganlar" in m.text:
-        data = db.get_no_answer_numbers(); fn = "NoAns.xlsx"; header = ["Tel"]
-    else:
-        data = db.get_all_numbers(); fn = "AllNums.xlsx"; header = ["Tel", "Ishlatilgan", "Operator", "Vaqt"]
-    wb = Workbook(); ws = wb.active; ws.append(header)
-    for r in data: ws.append(list(r))
-    wb.save(fn); await m.answer_document(FSInputFile(fn)); os.remove(fn)
 
 @router.message(F.text == "🆕 Yangi so'rovlar")
 async def adm_new(m: Message):
@@ -498,7 +565,6 @@ async def search_process(m: Message, state: FSMContext):
         for r in res[:5]:
             ph, op, dt, st, cn, age, h, w, intr, op_id = r
             txt = f"📱 {ph}\n👤 Op: {op}\n📊 Stat: {st}\n🕒 Vaqt: {dt}"
-            
             if is_priv and op_id and int(op_id) != sid:
                 kb = InlineKeyboardMarkup(inline_keyboard=[[
                     InlineKeyboardButton(text="✅ Eslatma yuborish", callback_data=f"ntf_y_{op_id}_{ph}"),
@@ -527,62 +593,8 @@ async def process_notification_callback(c: CallbackQuery):
         except Exception as e:
             await c.message.answer(f"Xatolik: {e}")
 
-# --- EXCEL REPORT ---
-async def generate_excel(m, period, op_id):
-    now = datetime.now()
-    if period == "kunlik": 
-        s = now.replace(hour=0, minute=0, second=0)
-        e = now + timedelta(days=1)
-    elif period == "haftalik": 
-        s = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0)
-        e = s + timedelta(days=7)
-    elif period == "oylik": 
-        s = now.replace(day=1, hour=0, minute=0, second=0)
-        e = (s.replace(month=s.month+1) if s.month < 12 else s.replace(year=s.year+1, month=1))
-    
-    rows = db.get_calls_stats(s, e, op_id)
-    if not rows: return await m.answer("Ushbu davr uchun ma'lumot topilmadi.")
-    
-    wb = Workbook(); ws = wb.active
-    ws.append(["Op ID", "Op", "Tel", "Status", "Mijoz", "Yosh", "Bo'y", "Vazn", "Qiziqish", "Vaqt"])
-    for r in rows: ws.append(list(r))
-    
-    filename = f"Rep_{period}.xlsx"
-    wb.save(filename)
-    await m.answer_document(FSInputFile(filename))
-    if os.path.exists(filename): os.remove(filename)
-
-@router.message(F.text.in_(["📅 Kunlik Excel", "📅 Haftalik Excel", "📅 Oylik Excel"]))
-async def adm_exc(m: Message): 
-    if m.from_user.id in ADMIN_IDS: 
-        p = "kunlik" if "Kunlik" in m.text else "haftalik" if "Haftalik" in m.text else "oylik"
-        await generate_excel(m, p, None)
-
-@router.message(F.text == "📉 Bugungi qabul qilinmagan")
-async def today_no(m: Message):
-    nums = db.get_today_no_answers(m.from_user.id)
-    if not nums:
-        await m.answer("Bugun barcha raqamlarga javob berilgan.")
-    else:
-        lines = []
-        for r in nums: lines.append(f"❌ {r[0]}")
-        await m.answer("📉 Bugungi ko'tarmaganlar:\n" + "\n".join(lines))
-
-@router.message(F.text == "📈 Shaxsiy statistikam")
-async def my_st(m: Message): 
-    await m.answer("Davrni tanlang:", reply_markup=personal_kb)
-
-@router.message(F.text.contains("hisobot (Excel)"))
-async def my_ex(m: Message): 
-    p = "kunlik" if "Kunlik" in m.text else "haftalik"
-    await generate_excel(m, p, m.from_user.id)
-
-@router.message(F.text == "🔙 Asosiy Menyu")
-async def back_main(m: Message, state: FSMContext): 
-    await cmd_start(m, state)
-
 async def main():
-    print("Bot Aiogram 3 (Python 3.10) da ishga tushdi...")
+    print("Bot Aiogram 3 da ishga tushdi...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
